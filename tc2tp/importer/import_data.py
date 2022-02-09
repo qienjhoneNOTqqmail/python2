@@ -29,6 +29,7 @@ class Data2DB:
 
     def processFile(self, file_path: Path) -> None:
         """import one file"""
+        
         pass
 
     def processAllFiles(self) -> None:
