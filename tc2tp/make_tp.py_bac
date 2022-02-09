@@ -1,0 +1,245 @@
+from pathlib import Path
+from typing import Dict, List
+
+import xlsxwriter
+
+from tc2tp.common.config import config
+from tc2tp.common.constant import TPSheetCfg
+from tc2tp.common.logger import logger
+from tc2tp.models import CaseBase, StepKey
+from tc2tp.query_builder import QueryBuilder
+
+
+class MakeTP:
+    def __init__(self, tp_dir: str, datas: Dict[str, List]) -> None:
+        self.tp_dir = Path(tp_dir)
+        self.datas = datas
+
+    def makeOne(self, tp_id: str) -> None:
+        tp_path = self.tp_dir.joinpath(tp_id + ".xlsx")
+        tp_datas = self.datas.get(tp_id)
+        try:
+            _MakeTP(tp_path, tp_datas).write()
+        except Exception as e:
+            if config.DEBUG:
+                logger.exception(e)
+            else:
+                logger.error(f"[{tp_id}]:{e!s}")
+
+    def make(self) -> None:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor() as executor:
+            executor.map(self.makeOne, self.datas.keys())
+        # for tp_id in self.datas:
+        #     self.makeOne(tp_id)
+
+
+class _MakeTP:
+    def __init__(self, tp_path: Path, tp_datas: List[CaseBase]) -> None:
+        self.tp_id = tp_path.stem
+        self.workbook = xlsxwriter.Workbook(tp_path)
+        # self.configuration_sheet = self.workbook.add_worksheet(
+        #     "I Configuration")
+        # self.system_test_inputs_sheet = self.workbook.add_worksheet(
+        #     "II System Test Inputs")
+        # self.functional_area_reqs_sheet = self.workbook.add_worksheet(
+        #     "III Functional Area Reqs")
+        self.worksheet = self.workbook.add_worksheet("IV Test Cases")
+        # self.software_sheet = self.workbook.add_worksheet("V Software")
+        self.tp_datas = tp_datas
+        self.row_ind = 0
+        self.common_format_obj = {
+            "font_name": TPSheetCfg.font_name,
+            "font_size": TPSheetCfg.font_size,
+            "align": "left",
+            "valign": "bottom",
+            "text_wrap": 1,
+        }
+        self.default_row_height = TPSheetCfg.default_row_height
+        self.max_column_ind = 7
+
+        self.error_flag = False
+
+    def _writeTPHeader(self) -> None:
+        for col, width in TPSheetCfg.sheet_column_width_mapper:
+            self.worksheet.set_column(col, width)
+        header = "Shanghai Aviation Electric Co., Ltd.\nC919 MODEL TEST Procedure SPECIFICATION"
+        self.worksheet.set_row(self.row_ind, 32)
+        merge_format = self.workbook.add_format(
+            dict(
+                self.common_format_obj,
+                bold=1,
+                align="center",
+                valign="vcenter",
+                font_size=TPSheetCfg.font_size,
+            ))
+        self.worksheet.merge_range(self.row_ind, 0, self.row_ind,
+                                   self.max_column_ind, header, merge_format)
+        self.row_ind += 1
+        header = "TEST Procedure"
+        self.worksheet.set_row(self.row_ind, self.default_row_height + 2)
+        self.worksheet.merge_range(self.row_ind, 0, self.row_ind,
+                                   self.max_column_ind, header, merge_format)
+        self.row_ind += 1
+
+    def _writeScriptHeader(self) -> None:
+        cell_format = self.workbook.add_format(self.common_format_obj)
+        header_format = self.workbook.add_format(
+            dict(self.common_format_obj, bold=1))
+        cell_values = [("SCRIPT NAME", self.tp_id), ("HEADER", None),
+                       (None, "Display Aircraft Symbol"),
+                       ("END OF HEADER", None)]
+        for header, value in cell_values:
+            self.worksheet.set_row(self.row_ind, self.default_row_height)
+            self.worksheet.write(self.row_ind, 0, header, header_format)
+            self.worksheet.merge_range(self.row_ind, 1, self.row_ind,
+                                       self.max_column_ind, value, cell_format)
+            self.row_ind += 1
+
+        self.row_ind += 1  # add a blank row
+
+    def _writeTestPrompt(self, tp_data: CaseBase) -> None:
+        cell_format = self.workbook.add_format(
+            dict(self.common_format_obj, valign="top"))
+
+        # write start of TEST PROMPT
+        header_format = self.workbook.add_format(
+            dict(self.common_format_obj,
+                 font_color="green",
+                 bold=1,
+                 valign="top"))
+        description = tp_data.description
+        max_length = len(description.split('\n')) if description else 1
+        self.worksheet.set_row(self.row_ind,
+                               self.default_row_height * max_length)
+        self.worksheet.write(self.row_ind, 0, "START OF TEST PROMPT",
+                             header_format)
+        self.worksheet.write(self.row_ind, 1, "TESTING:", cell_format)
+        self.worksheet.write(self.row_ind, 2, description, cell_format)
+        self.row_ind += 2
+
+        # write main body
+        cell_values = [("REQUIREMENTS TESTED:",
+                        "\n".join(tp_data.requirement_id)), (None, None),
+                       ("ACTION:", None), (None, None), ("ENSURE:", None)]
+        for key, value in cell_values:
+            max_length = len(value.split('\n')) if value else 1
+            self.worksheet.set_row(self.row_ind,
+                                   self.default_row_height * max_length)
+            self.worksheet.write(self.row_ind, 1, key, cell_format)
+            self.worksheet.write(self.row_ind, 2, value, cell_format)
+            self.row_ind += 1
+
+        # write end of TEST PROMPT
+        header_format = self.workbook.add_format(
+            dict(self.common_format_obj,
+                 font_color="green",
+                 bold=1,
+                 valign="bottom"))
+        self.worksheet.set_row(self.row_ind, self.default_row_height)
+        self.worksheet.write(self.row_ind, 0, "END OF TEST PROMPT",
+                             header_format)
+        self.row_ind += 2  # add a blank row
+
+    def _writeTestScript(self, tp_data: CaseBase) -> None:
+        header_format = self.workbook.add_format(
+            dict(self.common_format_obj, font_color="blue", bold=1))
+
+        # write start of TEST SCRIPT
+        self.worksheet.set_row(self.row_ind, self.default_row_height)
+        self.worksheet.write(self.row_ind, 0, "START OF TEST SCRIPT",
+                             header_format)
+        self.row_ind += 1
+
+        # write condition
+        cell_format = self.workbook.add_format(
+            dict(self.common_format_obj, text_wrap=0))
+        detail_steps = tp_data.detail_steps
+        rows_values = []
+        for c in detail_steps:
+            if c.step_key in [StepKey.ramp, StepKey.set]:
+                try:
+                    results = QueryBuilder(
+                        step=c,
+                        func_allo=tp_data.function_allocation,
+                        site=tp_data.verification_site).query()
+                except Exception as e:
+                    self.error_flag = True
+                    if config.DEBUG:
+                        logger.exception(e)
+                    else:
+                        logger.error(f"[{tp_data.case_id}]:{e!s}")
+                    continue
+                for result in results:
+                    for name, value in result.items():
+                        logger.debug(name, value)
+                        if isinstance(value, list):
+                            rows_values.append(
+                                [str(StepKey.ramp), name, "STEP", *value])
+                        else:
+                            rows_values.append([str(StepKey.set), name, value])
+            else:
+                for content in c.contents:
+                    if c.step_key in [StepKey.action, StepKey.wait]:
+                        rows_values.append([str(c.step_key), content])
+        i = 1
+        for row_values in rows_values:
+            self.worksheet.set_row(self.row_ind, self.default_row_height)
+            self.worksheet.write(self.row_ind, 0, i, header_format)
+            self.worksheet.write_row(self.row_ind, 1, row_values, cell_format)
+            i += 1
+            self.row_ind += 1
+
+        # write result
+        cell_format = self.workbook.add_format(dict(self.common_format_obj))
+        result = tp_data.expected_result
+        for key, value in result:
+            if value is None:
+                continue
+            self.worksheet.set_row(self.row_ind,
+                                   self.default_row_height * (len(value) + 1))
+            self.worksheet.write(self.row_ind, 0, i, header_format)
+            self.worksheet.write(self.row_ind, 1, key, cell_format)
+            self.worksheet.write(self.row_ind, 2, "\n".join(value),
+                                 cell_format)
+            i += 1
+            self.row_ind += 1
+
+        # write end of TEST SCRIPT
+        self.worksheet.set_row(self.row_ind, self.default_row_height)
+        self.worksheet.write(self.row_ind, 0, "END OF TEST SCRIPT",
+                             header_format)
+        self.row_ind += 1
+
+    def _writeTestCase(self) -> None:
+        header_format = self.workbook.add_format(
+            dict(self.common_format_obj, font_color="red", bold=1))
+        cell_format = self.workbook.add_format(self.common_format_obj)
+        for tp_data in self.tp_datas:
+            self.worksheet.set_row(self.row_ind, self.default_row_height)
+            self.worksheet.write(self.row_ind, 0, "START OF TEST CASE",
+                                 header_format)
+            self.worksheet.write(self.row_ind, 1, tp_data.case_id, cell_format)
+            self.row_ind += 1
+            self._writeTestPrompt(tp_data)
+            self._writeTestScript(tp_data)
+            self.worksheet.set_row(self.row_ind, self.default_row_height)
+            self.worksheet.write(self.row_ind, 0, "END OF TEST CASE",
+                                 header_format)
+            self.row_ind += 2  # there is a blank row between the TEST CASES
+
+    def _writeEndAll(self) -> None:
+        header_format = self.workbook.add_format(
+            dict(self.common_format_obj, bold=1))
+        self.worksheet.set_row(self.row_ind, self.default_row_height)
+        self.worksheet.write(self.row_ind, 0, "END OF ALL TESTS",
+                             header_format)
+
+    def write(self) -> None:
+        self._writeTPHeader()
+        self._writeScriptHeader()
+        self._writeTestCase()
+        self._writeEndAll()
+        if not self.error_flag:
+            logger.info(f"======{self.tp_id} Write Successfully!======")
+            self.workbook.close()

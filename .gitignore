@@ -1,0 +1,13 @@
+/data
+logs/
+**/*.log
+**/__pycache__
+**/.vscode/
+**/.idea/
+**/.DS_Store
+**/._.DS_Store
+.venv/
+venv/
+.env
+tmp.json
+.VSCodeCounter/
